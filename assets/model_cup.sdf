@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <model name="cup_template">
+    <link name="base_link">
+      <inertial>
+        <mass>0.03</mass>
+        <inertia>
+          <ixx>0.00032</ixx>
+          <iyy>0.00032</iyy>
+          <izz>0.000024</izz>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyz>0</iyz>
+        </inertia>
+      </inertial>
+
+      <collision name="collision">
+        <geometry>
+          <cylinder>
+            <radius>0.04</radius>
+            <length>0.095</length>
+          </cylinder>
+        </geometry>
+      </collision>
+
+      <visual name="cup_mesh">
+        <geometry>
+          <mesh>
+            <uri>file:///datasets/_deepnote_work/assets/cup.obj</uri>
+            <scale>0.03 0.03 0.03</scale>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1.0 0.4 0.7 1.0</ambient>
+          <diffuse>1.0 0.4 0.7 1.0</diffuse>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>
