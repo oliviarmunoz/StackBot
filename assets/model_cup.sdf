@@ -2,6 +2,7 @@
 <sdf version="1.9">
   <model name="cup_template">
     <link name="base_link">
+      <pose>0 0 0 0 0 0</pose>
       <inertial>
         <mass>0.03</mass>
         <inertia>
@@ -14,20 +15,29 @@
         </inertia>
       </inertial>
 
-      <collision name="collision">
-        <geometry>
-          <cylinder>
-            <radius>0.04</radius>
-            <length>0.095</length>
-          </cylinder>
-        </geometry>
-      </collision>
-
-      <visual name="cup_mesh">
+      <collision name="cup_collision">
+        <pose>0 0 0 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>file:///datasets/_deepnote_work/assets/cup.obj</uri>
-            <scale>0.03 0.03 0.03</scale>
+            <uri>file:///workspaces/StackBot/assets/cup_collision.obj</uri>
+            <scale>0.3 0.3 0.3</scale>
+          </mesh>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>0.8</mu>
+              <mu2>0.8</mu2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      <visual name="cup_mesh">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>file:///workspaces/StackBot/assets/cup.obj</uri>
+            <scale>0.3 0.3 0.3</scale>
           </mesh>
         </geometry>
         <material>
@@ -35,6 +45,7 @@
           <diffuse>1.0 0.4 0.7 1.0</diffuse>
         </material>
       </visual>
+
     </link>
   </model>
 </sdf>

@@ -1,9 +1,9 @@
 
     directives:
         - add_directives:
-            file: file:///workspaces/MIT/6.4210/StackBot/directives/bimanual_IIWA14_with_table.dmd.yaml
+            file: file:///workspaces/StackBot/directives/bimanual_IIWA14_with_table.dmd.yaml
         - add_directives:
-            file: file:///workspaces/MIT/6.4210/StackBot/directives/camera_directives.dmd.yaml
+            file: file:///workspaces/StackBot/directives/camera_directives.dmd.yaml
 
 
     cameras:
