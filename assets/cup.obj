@@ -1,6 +1,5 @@
 # Blender v3.0.1 OBJ File: ''
 # www.blender.org
-mtllib plastic_cap.mtl
 o plastic_cap_Mesh
 v -0.000000 0.009146 -0.085462
 v 0.016673 0.009146 -0.083819

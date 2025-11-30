@@ -57,6 +57,7 @@ patch_file_paths()
 # -----------------------------------------------------------------------------
 
 meshcat = StartMeshcat()
+print("Meshcat listening at:", meshcat.web_url())
 
 # -----------------------------------------------------------------------------
 # 3. Build station + cameras + point clouds + constant commands
@@ -65,12 +66,12 @@ meshcat = StartMeshcat()
 def create_stackbot_scene():
     scenario_path = "scenarios/bimanual_IIWA14_with_table_and_cameras.scenario.yaml"
     scenario = LoadScenario(filename=scenario_path)
-    station = MakeHardwareStation(scenario, meshcat)
 
     builder = DiagramBuilder()
-    station = builder.AddSystem(station)
+    station = MakeHardwareStation(scenario, meshcat=meshcat)
+    builder.AddSystem(station)
 
-    plant = station.plant()
+    plant = station.GetSubsystemByName("plant")
 
     # ---- Constant commands so the iiwa/wsg just "sit there" ----
     iiwa_model = plant.GetModelInstanceByName("iiwa")
@@ -140,8 +141,8 @@ rpy_cup = RollPitchYaw(np.deg2rad([270, 0, -90]))
 
 # Base row on table (y = 0), spacing in x.
 # z ~ 0.2 puts them roughly on the table; adjust if they float / intersect.
-X_W_left  = RigidTransform(rpy_cup, [-0.10, 0.0, 0.20])
-X_W_right = RigidTransform(rpy_cup, [ 0.10, 0.0, 0.20])
+X_W_left  = RigidTransform(rpy_cup, [-0.06, 0.0, 0.20])
+X_W_right = RigidTransform(rpy_cup, [ 0.06, 0.0, 0.20])
 
 # Top cup centered above them, a bit higher
 X_W_top   = RigidTransform(rpy_cup, [ 0.00, 0.0, 0.35])
@@ -157,10 +158,18 @@ diagram.ForcedPublish(context)
 # 5. Run a short simulation to test collisions & point clouds
 # -----------------------------------------------------------------------------
 
-simulator = Simulator(diagram, context)
-simulator.Initialize()
+# simulator = Simulator(diagram, context)
+# simulator.Initialize()
 
-# A couple seconds is enough to see gravity / contact effects
-simulator.AdvanceTo(15.0)
+# # A couple seconds is enough to see gravity / contact effects
+# simulator.AdvanceTo(15.0)
+simulator = Simulator(diagram, context)
+# context = simulator.get_mutable_context()
+# diagram.ForcedPublish(context)
+
+meshcat.StartRecording()
+simulator.AdvanceTo(5.0)
+meshcat.StopRecording()
+meshcat.PublishRecording()
 
 print("Scene setup complete: iiwa + wsg + table + pyramid cups + 3 depth cameras with point clouds.")
