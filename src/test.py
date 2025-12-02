@@ -1,16 +1,38 @@
 import os
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
+import trimesh
 
 from pydrake.all import (
-    DiagramBuilder,
-    StartMeshcat,
-    Simulator,
+    AddFrameTriadIllustration,
+    BasicVector,
+    Concatenate,
     ConstantVectorSource,
+    Context,
+    Diagram,
+    DiagramBuilder,
+    Integrator,
+    JacobianWrtVariable,
+    LeafSystem,
+    MultibodyPlant,
+    PiecewisePolynomial,
+    PiecewisePose,
+    PointCloud,
+    Rgba,
+    RigidTransform,
+    RobotDiagram,
+    RollPitchYaw,
+    RotationMatrix,
+    Simulator,
+    StartMeshcat,
+    Trajectory,
+    TrajectorySource,
 )
-from pydrake.math import RigidTransform, RollPitchYaw
 
+from manipulation.icp import IterativeClosestPoint
+from manipulation.meshcat_utils import AddMeshcatTriad
 from manipulation.station import (
     AddPointClouds,
     LoadScenario,
@@ -50,7 +72,7 @@ def patch_file_paths():
             # Nothing to do, but good to know.
             print(f"[patch_file_paths] No old prefix found in {path}")
 
-patch_file_paths()
+# patch_file_paths()
 
 # -----------------------------------------------------------------------------
 # 2. Start Meshcat
@@ -128,6 +150,52 @@ plant_context = plant.GetMyMutableContextFromRoot(context)
 # 4. Put the cups in a pyramid on the table
 # -----------------------------------------------------------------------------
 
+def place_cup_randomly_on_table(plant, plant_context, body):
+    # Table top is at z = 0.0, so we give a small lift
+    z = 0.15
+    
+    # Robot workspace bounding box (tune as needed)
+    X_MIN, X_MAX = -0.35, 0.35
+    Y_MIN, Y_MAX = -0.35, 0.35
+    
+    x = np.random.uniform(X_MIN, X_MAX)
+    y = np.random.uniform(Y_MIN, Y_MAX)
+
+    # Keep cup lying-down orientation same as before
+    rpy = RollPitchYaw(np.deg2rad([270, 0, -90]))
+
+    X_WC = RigidTransform(rpy, [x, y, z])
+    plant.SetFreeBodyPose(plant_context, body, X_WC)
+
+def place_cup_noncolliding(plant, plant_context, body, max_tries=100):
+    """
+    Sample random poses for the cup until Drake reports that
+    the placement does NOT collide with the robot, table, or other cups.
+    """
+    for attempt in range(max_tries):
+        # Sample random position
+        z = 0.15
+        X_MIN, X_MAX = -0.35, 0.35
+        Y_MIN, Y_MAX = -0.35, 0.35
+        x = np.random.uniform(X_MIN, X_MAX)
+        y = np.random.uniform(Y_MIN, Y_MAX)
+        rpy = RollPitchYaw(np.deg2rad([270, 0, -90]))
+        X_WC = RigidTransform(rpy, [x, y, z])
+
+        # Try pose
+        plant.SetFreeBodyPose(plant_context, body, X_WC)
+
+        # Query collisions
+        query_object = plant.get_geometry_query_input_port().Eval(plant_context)
+        penetrations = query_object.ComputePointPairPenetration()
+
+        if len(penetrations) == 0:
+            # SUCCESS!
+            return X_WC
+
+    raise RuntimeError("Could not find a collision-free placement after many tries.")
+
+
 cup_left_model  = plant.GetModelInstanceByName("cup_lower_left")
 cup_right_model = plant.GetModelInstanceByName("cup_lower_right")
 cup_top_model   = plant.GetModelInstanceByName("cup_top")
@@ -136,26 +204,82 @@ cup_left_body  = plant.GetBodyByName("base_link", cup_left_model)
 cup_right_body = plant.GetBodyByName("base_link", cup_right_model)
 cup_top_body   = plant.GetBodyByName("base_link", cup_top_model)
 
-# Orientation: same as in your notebook (lying on their side)
-rpy_cup = RollPitchYaw(np.deg2rad([270, 0, -90]))
+# # Orientation: same as in your notebook (lying on their side)
+# rpy_cup = RollPitchYaw(np.deg2rad([270, 0, -90]))
 
-# Base row on table (y = 0), spacing in x.
-# z ~ 0.2 puts them roughly on the table; adjust if they float / intersect.
-X_W_left  = RigidTransform(rpy_cup, [-0.06, 0.0, 0.20])
-X_W_right = RigidTransform(rpy_cup, [ 0.06, 0.0, 0.20])
+# # Base row on table (y = 0), spacing in x.
+# # z ~ 0.2 puts them roughly on the table; adjust if they float / intersect.
+# X_W_left  = RigidTransform(rpy_cup, [-0.06, 0.0, 0.20])
+# X_W_right = RigidTransform(rpy_cup, [ 0.06, 0.0, 0.20])
 
-# Top cup centered above them, a bit higher
-X_W_top   = RigidTransform(rpy_cup, [ 0.00, 0.0, 0.35])
+# # Top cup centered above them, a bit higher
+# X_W_top   = RigidTransform(rpy_cup, [ 0.00, 0.0, 0.35])
 
-plant.SetFreeBodyPose(plant_context, cup_left_body,  X_W_left)
-plant.SetFreeBodyPose(plant_context, cup_right_body, X_W_right)
-plant.SetFreeBodyPose(plant_context, cup_top_body,   X_W_top)
+# plant.SetFreeBodyPose(plant_context, cup_left_body,  X_W_left)
+# plant.SetFreeBodyPose(plant_context, cup_right_body, X_W_right)
+# plant.SetFreeBodyPose(plant_context, cup_top_body,   X_W_top)
+
+
+# WORKING RANDOMIZED CUPS
+place_cup_randomly_on_table(plant, plant_context, cup_left_body)
+place_cup_randomly_on_table(plant, plant_context, cup_right_body)
+place_cup_randomly_on_table(plant, plant_context, cup_top_body)
 
 # Push state to Meshcat
 diagram.ForcedPublish(context)
 
 # -----------------------------------------------------------------------------
-# 5. Run a short simulation to test collisions & point clouds
+# 5. Point Clouds (Notebook 4 - Geometric Pose Estimation)
+# -----------------------------------------------------------------------------
+
+N_SAMPLE_POINTS = 1500
+
+# load your intitials with trimesh.load(...) as a mesh.
+# To do this, you should make sure to use the kwargs force="mesh".
+# See the docs for more info at https://trimesh.org/
+mesh = trimesh.load(f"assets/cup.obj", force="mesh")
+
+# sample N_SAMPLE_POINTS from the mesh and then turn those points into a numpy array (you might need to transpose)
+# You should make use of the `sample` method of the mesh object.
+points = mesh.sample(count=N_SAMPLE_POINTS)
+
+# create a `PointCloud` object from the numpy array
+point_cloud = PointCloud(N_SAMPLE_POINTS)
+point_cloud.mutable_xyzs()[:] = points.T
+
+cameras = ["camera0", "camera1", "camera2"]
+station_context = diagram.GetSubsystemContext(station, context)
+
+# Visualize rgb output
+fig, axes = plt.subplots(
+    1, len(cameras), figsize=(5 * len(cameras), 4), constrained_layout=True
+)
+for ax, cam in zip(axes, cameras):
+    img = station.GetOutputPort(f"{cam}.rgb_image").Eval(station_context)
+    arr = np.array(img.data, copy=False).reshape(img.height(), img.width(), -1)
+    im = ax.imshow(arr)
+    ax.set_title(f"{cam} rgb image")
+    ax.axis("off")
+
+plt.savefig("cups_point_cloud_rgb.png")
+
+# Visualize depth output
+fig, axes = plt.subplots(
+    1, len(cameras), figsize=(5 * len(cameras), 4), constrained_layout=True
+)
+for ax, cam in zip(axes, cameras):
+    img = station.GetOutputPort(f"{cam}.depth_image").Eval(station_context)
+    depth_img = np.array(img.data, copy=False).reshape(img.height(), img.width(), -1)
+    depth_img = np.ma.masked_invalid(depth_img)
+    img = ax.imshow(depth_img, cmap="magma")
+    ax.set_title(f"{cam} depth image")
+    ax.axis("off")
+
+plt.savefig("cups_point_cloud_depth.png")
+
+
+# -----------------------------------------------------------------------------
+# 6. Run a short simulation to test collisions & point clouds
 # -----------------------------------------------------------------------------
 
 # simulator = Simulator(diagram, context)
