@@ -167,35 +167,6 @@ def place_cup_randomly_on_table(plant, plant_context, body):
     X_WC = RigidTransform(rpy, [x, y, z])
     plant.SetFreeBodyPose(plant_context, body, X_WC)
 
-def place_cup_noncolliding(plant, plant_context, body, max_tries=100):
-    """
-    Sample random poses for the cup until Drake reports that
-    the placement does NOT collide with the robot, table, or other cups.
-    """
-    for attempt in range(max_tries):
-        # Sample random position
-        z = 0.15
-        X_MIN, X_MAX = -0.35, 0.35
-        Y_MIN, Y_MAX = -0.35, 0.35
-        x = np.random.uniform(X_MIN, X_MAX)
-        y = np.random.uniform(Y_MIN, Y_MAX)
-        rpy = RollPitchYaw(np.deg2rad([270, 0, -90]))
-        X_WC = RigidTransform(rpy, [x, y, z])
-
-        # Try pose
-        plant.SetFreeBodyPose(plant_context, body, X_WC)
-
-        # Query collisions
-        query_object = plant.get_geometry_query_input_port().Eval(plant_context)
-        penetrations = query_object.ComputePointPairPenetration()
-
-        if len(penetrations) == 0:
-            # SUCCESS!
-            return X_WC
-
-    raise RuntimeError("Could not find a collision-free placement after many tries.")
-
-
 cup_left_model  = plant.GetModelInstanceByName("cup_lower_left")
 cup_right_model = plant.GetModelInstanceByName("cup_lower_right")
 cup_top_model   = plant.GetModelInstanceByName("cup_top")
@@ -276,6 +247,75 @@ for ax, cam in zip(axes, cameras):
     ax.axis("off")
 
 plt.savefig("cups_point_cloud_depth.png")
+
+plant = station.plant()
+plant_context = diagram.GetSubsystemContext(plant, context)
+world_frame = plant.world_frame()
+
+# List of cup bodies
+cup_bodies = [cup_left_body, cup_right_body, cup_top_body]
+cup_names = ["left", "right", "top"]
+
+cropped_point_clouds = []
+
+for body, name in zip(cup_bodies, cup_names):
+    # Get current pose of the cup in world frame
+    X_WC = plant.CalcRelativeTransform(plant_context, world_frame, body.body_frame())
+
+    # Create a crop region around the cup (adjust offset to cup size)
+    offset = np.array([0.1, 0.1, 0.1])  # 10cm cube around center
+    lower = X_WC.translation() - offset
+    upper = X_WC.translation() + offset
+
+    # Get camera point clouds
+    pc0 = diagram.GetOutputPort("camera0_point_cloud").Eval(context)
+    pc1 = diagram.GetOutputPort("camera1_point_cloud").Eval(context)
+    pc2 = diagram.GetOutputPort("camera2_point_cloud").Eval(context)
+
+    # Crop each camera’s point cloud
+    pc0_crop = pc0.Crop(lower_xyz=lower, upper_xyz=upper)
+    pc1_crop = pc1.Crop(lower_xyz=lower, upper_xyz=upper)
+    pc2_crop = pc2.Crop(lower_xyz=lower, upper_xyz=upper)
+
+    # Concatenate crops from all cameras
+    cup_pc = Concatenate([pc0_crop, pc1_crop, pc2_crop])
+
+    # Downsample for efficiency
+    cup_pc = cup_pc.VoxelizedDownSample(0.005)
+
+    # Remove points below table
+    def remove_table_points(pc: PointCloud) -> PointCloud:
+        xyzs = pc.xyzs()
+        mask = xyzs[2, :] > 0.01
+        filtered = PointCloud(mask.sum(), fields=pc.fields())
+        filtered.mutable_xyzs()[:] = xyzs[:, mask]
+        if pc.has_rgbs():
+            filtered.mutable_rgbs()[:] = pc.rgbs()[:, mask]
+        if pc.has_normals():
+            filtered.mutable_normals()[:] = pc.normals()[:, mask]
+        return filtered
+
+    cup_pc = remove_table_points(cup_pc)
+    cropped_point_clouds.append(cup_pc)
+
+    # # Optional: visualize bounding box in Meshcat
+    # meshcat.SetLineSegments(
+    #     f"bounding_{name}",
+    #     lower.reshape(3,1),
+    #     upper.reshape(3,1),
+    #     1.0,
+    #     Rgba(0, 1, 0),
+    # )
+
+# Now `cropped_point_clouds` has one PointCloud per cup
+# You can now run ICP on each cropped cloud using your cup mesh
+
+# Assume `cropped_point_clouds` has one PointCloud per cup
+colors = [Rgba(1, 0, 0), Rgba(0, 1, 0), Rgba(0, 0, 1)]  # red, green, blue
+cup_names = ["left", "right", "top"]
+
+for cup_pc, color, name in zip(cropped_point_clouds, colors, cup_names):
+    meshcat.SetObject(f"cup_{name}_point_cloud", cup_pc, point_size=0.02, rgba=color)
 
 
 # -----------------------------------------------------------------------------
