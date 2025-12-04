@@ -1,0 +1,46 @@
+# ----------------------------
+# Python cache / temp files
+# ----------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pkl
+*.pdb
+*.tmp
+*.log
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# ----------------------------
+# Jupyter + IPython caches
+# ----------------------------
+.ipynb_checkpoints/
+.profile_default/
+__pycache__/
+*.ipynb_convert/
+
+# ----------------------------
+# Drake / Meshcat caches
+# ----------------------------
+# Drake downloads cached in home directory
+~/.cache/drake/
+**/.cache/drake/
+.drake-cache/
+drake-cache/
+
+# Meshcat saved states
+meshcat/
+meshcat_data/
+meshcat_records/
+*.meshcat.json
+
+*.lcm
+logs/
+
+# ----------------------------
+# Build and binary artifacts
+# ----------------------------
