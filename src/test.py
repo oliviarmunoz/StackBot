@@ -211,6 +211,16 @@ N_SAMPLE_POINTS = 150
 # See the docs for more info at https://trimesh.org/
 mesh = trimesh.load(f"assets/cup.obj", force="mesh")
 
+
+
+model_points_O = mesh.sample(count=N_SAMPLE_POINTS).T  # 3 x N, object frame
+
+# Drake PointCloud for visualization (optional)
+model_point_cloud = PointCloud(N_SAMPLE_POINTS)
+model_point_cloud.mutable_xyzs()[:] = model_points_O
+
+
+
 # sample N_SAMPLE_POINTS from the mesh and then turn those points into a numpy array (you might need to transpose)
 # You should make use of the `sample` method of the mesh object.
 points = mesh.sample(count=N_SAMPLE_POINTS)
@@ -263,11 +273,16 @@ for body, name in zip(cup_bodies, cup_names):
     # Get current pose of the cup in world frame
     X_WC = plant.CalcRelativeTransform(plant_context, world_frame, body.body_frame())
 
-    # Create a crop region around the cup (adjust offset to cup size)
-    offset = np.array([0.15, 0.15, 0.15])  # 10cm cube around center
-    lower = X_WC.translation() - offset 
-    upper = X_WC.translation() + offset
 
+    # Draw the true axis
+    AddMeshcatTriad(
+        meshcat,
+        f"truth/{name}",
+        X_PT=X_WC,
+        length=0.07,   # make bigger if needed
+        radius=0.003,
+    )
+    # Create a crop region around the cup (adjust offset to cup size)
     lower = X_WC.translation() - np.array([0.07, 0.07, 0.15]) 
     upper = X_WC.translation() + np.array([0.07, 0.07, 0.01])
 
@@ -320,6 +335,158 @@ cup_names = ["left", "right", "top"]
 
 for cup_pc, color, name in zip(cropped_point_clouds, colors, cup_names):
     meshcat.SetObject(f"cup_{name}_point_cloud", cup_pc, point_size=0.02, rgba=color)
+
+# -------------------------------------------------------------
+# TODO REGISTER POINT CLOUD GEOMETRY WITH ICP
+# -------------------------------------------------------------
+
+# -------------------------------------------------------------
+# 5.5 ICP REGISTRATION OF EACH CUP
+# -------------------------------------------------------------
+
+# -------------------------------------------------------------
+# 5.5 ICP REGISTRATION OF EACH CUP (FIXED)
+# -------------------------------------------------------------
+
+MAX_ITERATIONS = 25
+
+cup_bodies = [cup_left_body, cup_right_body, cup_top_body]
+cup_names  = ["left", "right", "top"]
+
+# We'll store the estimated *base_link* pose + final cost.
+icp_results = {}  # name -> (X_WC_hat, cost)
+
+for cup_pc, body, name in zip(cropped_point_clouds, cup_bodies, cup_names):
+    # Scene points: 3 x M in WORLD frame
+    scene_points_W = np.asarray(cup_pc.xyzs())
+
+    if scene_points_W.shape[1] < 5:
+        print(f"[ICP] Not enough points for cup '{name}', skipping.")
+        continue
+
+    # Initial guess: centroid of scene points, identity rotation
+    centroid_W = scene_points_W.mean(axis=1)
+    X_WO_initial = RigidTransform(RotationMatrix(), centroid_W)
+
+    # Optional: visualize the initial guess frame (mesh frame O)
+    AddMeshcatTriad(
+        meshcat,
+        f"icp/{name}_init",
+        X_PT=X_WO_initial,
+        length=0.05,
+        radius=0.002,
+    )
+
+    # Run ICP in the mesh frame O
+    X_WO_hat, c_hat = IterativeClosestPoint(
+        p_Om=model_points_O,          # 3 x N, object/mesh frame O
+        p_Ws=scene_points_W,         # 3 x M, world frame W
+        X_Ohat=X_WO_initial,         # initial guess X_WO
+        meshcat=meshcat,
+        meshcat_scene_path=f"icp/{name}",
+        max_iterations=MAX_ITERATIONS,
+    )
+
+    # Final scalar cost
+    final_cost = c_hat[-1] if hasattr(c_hat, "__len__") else c_hat
+    final_cost = float(final_cost)
+
+    # -----------------------------------------------------------------
+    # Convert from mesh frame O to the cup base_link frame C:
+    #   X_WC_true = world-from-base_link (plant)
+    #   X_WO_hat  = world-from-mesh (ICP)
+    #   X_CO_est  = (X_WC_true)^{-1} * X_WO_hat   (mesh-in-base_link)
+    #   X_OC_est  = (X_CO_est)^{-1}
+    #   X_WC_hat  = X_WO_hat * X_OC_est           (predicted base_link pose)
+    # -----------------------------------------------------------------
+    X_WC_true = plant.CalcRelativeTransform(
+        plant_context,
+        world_frame,
+        body.body_frame(),
+    )
+    X_CO_est = X_WC_true.inverse().multiply(X_WO_hat)
+    X_OC_est = X_CO_est.inverse()
+    X_WC_hat = X_WO_hat.multiply(X_OC_est)
+
+    # Store result in base_link frame
+    icp_results[name] = (X_WC_hat, final_cost)
+    print(f"[ICP] Cup '{name}' finished with cost {final_cost:.4f}")
+
+    # Visualize final pose in *base_link* frame so it matches the truth triad
+    # TODO (OLIVIA) create debug feature to visualize TRIADS (FIND AND ERADICATE)
+    AddMeshcatTriad(
+        meshcat,
+        f"icp/{name}_final",
+        X_PT=X_WC_hat,
+        length=0.07,
+        radius=0.003,
+    )
+
+# -----------------------------------------------------------------------------
+# Error vs. ground truth (base_link frame)
+# -----------------------------------------------------------------------------
+
+np.set_printoptions(precision=3, suppress=True)
+
+for (body, name) in zip(cup_bodies, cup_names):
+    if name not in icp_results:
+        continue
+
+    X_WC_hat, final_cost = icp_results[name]
+
+    # Ground truth pose of the cup base_link in world frame
+    X_WC_true = plant.CalcRelativeTransform(
+        plant_context,
+        world_frame,
+        body.body_frame(),
+    )
+
+    # Error transform: ICP vs truth (both base_link frame)
+    X_err = X_WC_hat.inverse().multiply(X_WC_true)
+
+    rpy_err = RollPitchYaw(X_err.rotation()).vector()
+    xyz_err = X_err.translation()
+
+    print(
+        f"cup '{name}' error: "
+        f"rpy (rad) = {rpy_err}, "
+        f"xyz (m) = {xyz_err}, "
+        f"cost = {final_cost:.4f}"
+    )
+
+
+# -----------------------------------------------------------------------------
+# TODO Pick and Place with registered geometries
+# -----------------------------------------------------------------------------
+
+np.set_printoptions(precision=3, suppress=True)
+
+for (body, name) in zip(cup_bodies, cup_names):
+    if name not in icp_results:
+        continue
+
+    X_WO_hat, c_hat = icp_results[name]
+
+    # Ground truth pose of the cup base_link in world frame
+    X_WO_true = plant.CalcRelativeTransform(
+        plant_context,
+        world_frame,
+        body.body_frame(),
+    )
+
+    # Error transform: how far we are from truth
+    X_err = X_WO_hat.inverse().multiply(X_WO_true)
+
+    rpy_err = RollPitchYaw(X_err.rotation()).vector()
+    xyz_err = X_err.translation()
+
+    print(
+        f"cup '{name}' error: "
+        f"rpy (rad) = {rpy_err}, "
+        f"xyz (m) = {xyz_err}, "
+        f"cost = {c_hat:.4f}"
+    )
+
 
 
 # -----------------------------------------------------------------------------
