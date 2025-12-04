@@ -155,9 +155,10 @@ def place_cup_randomly_on_table(plant, plant_context, body):
     z = 0.15
     
     # Robot workspace bounding box (tune as needed)
-    X_MIN, X_MAX = -0.35, 0.35
-    Y_MIN, Y_MAX = -0.35, 0.35
-    
+    extrema = 0.25
+    X_MIN, X_MAX = -extrema, extrema
+    Y_MIN, Y_MAX = -extrema+0.1, extrema+0.1
+
     x = np.random.uniform(X_MIN, X_MAX)
     y = np.random.uniform(Y_MIN, Y_MAX)
 
@@ -203,7 +204,7 @@ diagram.ForcedPublish(context)
 # 5. Point Clouds (Notebook 4 - Geometric Pose Estimation)
 # -----------------------------------------------------------------------------
 
-N_SAMPLE_POINTS = 1500
+N_SAMPLE_POINTS = 150
 
 # load your intitials with trimesh.load(...) as a mesh.
 # To do this, you should make sure to use the kwargs force="mesh".
@@ -263,9 +264,12 @@ for body, name in zip(cup_bodies, cup_names):
     X_WC = plant.CalcRelativeTransform(plant_context, world_frame, body.body_frame())
 
     # Create a crop region around the cup (adjust offset to cup size)
-    offset = np.array([0.1, 0.1, 0.1])  # 10cm cube around center
-    lower = X_WC.translation() - offset
+    offset = np.array([0.15, 0.15, 0.15])  # 10cm cube around center
+    lower = X_WC.translation() - offset 
     upper = X_WC.translation() + offset
+
+    lower = X_WC.translation() - np.array([0.07, 0.07, 0.15]) 
+    upper = X_WC.translation() + np.array([0.07, 0.07, 0.01])
 
     # Get camera point clouds
     pc0 = diagram.GetOutputPort("camera0_point_cloud").Eval(context)
@@ -299,13 +303,13 @@ for body, name in zip(cup_bodies, cup_names):
     cropped_point_clouds.append(cup_pc)
 
     # # Optional: visualize bounding box in Meshcat
-    # meshcat.SetLineSegments(
-    #     f"bounding_{name}",
-    #     lower.reshape(3,1),
-    #     upper.reshape(3,1),
-    #     1.0,
-    #     Rgba(0, 1, 0),
-    # )
+    meshcat.SetLineSegments(
+        f"bounding_{name}",
+        lower.reshape(3,1),
+        upper.reshape(3,1),
+        1.0,
+        Rgba(0, 1, 0),
+    )
 
 # Now `cropped_point_clouds` has one PointCloud per cup
 # You can now run ICP on each cropped cloud using your cup mesh
