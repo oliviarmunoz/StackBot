@@ -506,5 +506,6 @@ meshcat.StartRecording()
 simulator.AdvanceTo(5.0)
 meshcat.StopRecording()
 meshcat.PublishRecording()
+#yay!
 
 print("Scene setup complete: iiwa + wsg + table + pyramid cups + 3 depth cameras with point clouds.")
