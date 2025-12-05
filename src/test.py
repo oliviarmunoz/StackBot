@@ -40,49 +40,14 @@ from manipulation.station import (
 )
 
 # -----------------------------------------------------------------------------
-# 1. Patch old Deepnote paths to the current working directory
-# -----------------------------------------------------------------------------
-
-def patch_file_paths():
-    """
-    The project files still reference file:///datasets/_deepnote_work.
-    Replace that prefix with the current working directory so Drake
-    can find the table / cups / directives / scenario.
-    """
-    cwd = Path.cwd()
-    old_prefix = "file:///datasets/_deepnote_work"
-    new_prefix = f"file://{cwd}"
-
-    files_to_patch = [
-        Path("directives/bimanual_IIWA14_with_table.dmd.yaml"),
-        Path("directives/camera_directives.dmd.yaml"),
-        Path("scenarios/bimanual_IIWA14_with_table_and_cameras.scenario.yaml"),
-        Path("assets/model_cup.sdf"),
-    ]
-
-    for path in files_to_patch:
-        if not path.exists():
-            print(f"[patch_file_paths] Warning: {path} not found, skipping")
-            continue
-        text = path.read_text()
-        if old_prefix in text:
-            path.write_text(text.replace(old_prefix, new_prefix))
-            print(f"[patch_file_paths] Patched paths in {path}")
-        else:
-            # Nothing to do, but good to know.
-            print(f"[patch_file_paths] No old prefix found in {path}")
-
-# patch_file_paths()
-
-# -----------------------------------------------------------------------------
-# 2. Start Meshcat
+# Start Meshcat
 # -----------------------------------------------------------------------------
 
 meshcat = StartMeshcat()
 print("Meshcat listening at:", meshcat.web_url())
 
 # -----------------------------------------------------------------------------
-# 3. Build station + cameras + point clouds + constant commands
+# Build station + cameras + point clouds + constant commands
 # -----------------------------------------------------------------------------
 
 def create_stackbot_scene():
@@ -145,9 +110,10 @@ context = diagram.CreateDefaultContext()
 
 plant = station.plant()
 plant_context = plant.GetMyMutableContextFromRoot(context)
+scenario_path = "scenarios/bimanual_IIWA14_with_table_and_cameras.scenario.yaml"
 
 # -----------------------------------------------------------------------------
-# 4. Put the cups in a pyramid on the table
+# Put the cups in a pyramid on the table
 # -----------------------------------------------------------------------------
 
 def place_cup_randomly_on_table(plant, plant_context, body):
@@ -201,7 +167,7 @@ place_cup_randomly_on_table(plant, plant_context, cup_top_body)
 diagram.ForcedPublish(context)
 
 # -----------------------------------------------------------------------------
-# 5. Point Clouds (Notebook 4 - Geometric Pose Estimation)
+# Point Clouds
 # -----------------------------------------------------------------------------
 
 N_SAMPLE_POINTS = 150
@@ -337,15 +303,7 @@ for cup_pc, color, name in zip(cropped_point_clouds, colors, cup_names):
     meshcat.SetObject(f"cup_{name}_point_cloud", cup_pc, point_size=0.02, rgba=color)
 
 # -------------------------------------------------------------
-# TODO REGISTER POINT CLOUD GEOMETRY WITH ICP
-# -------------------------------------------------------------
-
-# -------------------------------------------------------------
-# 5.5 ICP REGISTRATION OF EACH CUP
-# -------------------------------------------------------------
-
-# -------------------------------------------------------------
-# 5.5 ICP REGISTRATION OF EACH CUP (FIXED)
+# ICP REGISTRATION OF EACH CUP 
 # -------------------------------------------------------------
 
 MAX_ITERATIONS = 25
@@ -413,7 +371,7 @@ for cup_pc, body, name in zip(cropped_point_clouds, cup_bodies, cup_names):
     print(f"[ICP] Cup '{name}' finished with cost {final_cost:.4f}")
 
     # Visualize final pose in *base_link* frame so it matches the truth triad
-    # TODO (OLIVIA) create debug feature to visualize TRIADS (FIND AND ERADICATE)
+
     AddMeshcatTriad(
         meshcat,
         f"icp/{name}_final",
@@ -455,10 +413,6 @@ for (body, name) in zip(cup_bodies, cup_names):
     )
 
 
-# -----------------------------------------------------------------------------
-# TODO Pick and Place with registered geometries
-# -----------------------------------------------------------------------------
-
 np.set_printoptions(precision=3, suppress=True)
 
 for (body, name) in zip(cup_bodies, cup_names):
@@ -486,8 +440,386 @@ for (body, name) in zip(cup_bodies, cup_names):
         f"xyz (m) = {xyz_err}, "
         f"cost = {c_hat:.4f}"
     )
+    
+class PseudoInverseController(LeafSystem):
+    def __init__(self, plant: MultibodyPlant):
+        super().__init__()
+        self._plant = plant
+        self._plant_context = plant.CreateDefaultContext()
+        self._iiwa = plant.GetModelInstanceByName("iiwa")
+        self._G = plant.GetBodyByName("body").body_frame()  # end-effector frame
+        self._W = plant.world_frame()
+
+        # Input/output ports
+        self.V_G_port = self.DeclareVectorInputPort("V_WG", 6)
+        self.q_port = self.DeclareVectorInputPort("iiwa.position", 7)
+        self.DeclareVectorOutputPort("iiwa.velocity", 7, self.CalcOutput)
+
+        # Velocity indices for IIWA
+        self.iiwa_start = self._plant.GetJointByName("iiwa_joint_1").velocity_start()
+        self.iiwa_end   = self.iiwa_start + self._plant.num_velocities(self._iiwa)
+
+    def CalcOutput(self, context: Context, output: BasicVector):
+        # Step 1: Get inputs
+        V_WG_desired = np.asarray(self.V_G_port.Eval(context)).reshape((6,))
+        q = np.asarray(self.q_port.Eval(context)).reshape((7,))
+
+        # Step 2: Enforce yz-plane motion (zero x translation)
+        V_WG_desired[0] = 0.0
+        # Optional: enforce angular constraints if needed
+        # V_WG_desired[3] = 0.0  # roll
+        # V_WG_desired[4] = 0.0  # pitch
+
+        # Step 3: Update plant context
+        self._plant.SetPositions(self._plant_context, self._iiwa, q)
+
+        # Step 4: Compute full Jacobian
+        J_full = self._plant.CalcJacobianSpatialVelocity(
+            self._plant_context,
+            JacobianWrtVariable.kV,
+            self._G,
+            np.zeros((3,1)),
+            self._W,
+            self._W
+        )
+
+        # Step 5: Extract IIWA columns
+        J_iiwa = J_full[:, self.iiwa_start:self.iiwa_end]
+
+        # Step 6: Compute joint velocities using pseudoinverse
+        v = np.linalg.pinv(J_iiwa) @ V_WG_desired
+
+        # Step 7: Output
+        output.SetFromVector(v)
+        
+def design_grasp_pose(X_WO: RigidTransform) -> tuple[RigidTransform, RigidTransform]:
+    """
+    Design grasp pose for a cup lying on its side.
+    Approach from above.
+    """
+    # Grasp from above
+    R_OG = RollPitchYaw(0, np.pi/2, 0).ToRotationMatrix()
+    
+    # Grasp at center of cup
+    p_OG = [0.0, 0.0, 0.05]
+    
+    X_OG = RigidTransform(R_OG, p_OG)
+    X_WG = X_WO.multiply(X_OG)
+    
+    return X_OG, X_WG
 
 
+def design_pregrasp_pose(X_WG: RigidTransform):
+    """
+    Move above the grasp position.
+    """
+    X_GGApproach = RigidTransform([0.0, 0.0, -0.15])  # 15cm above
+    X_WGApproach = X_WG @ X_GGApproach
+    return X_WGApproach
+
+
+def design_goal_poses(X_WO: RigidTransform, X_OG: RigidTransform):
+    """
+    Place cup at a different location on the table.
+    """
+    # Get current position
+    current_pos = X_WO.translation()
+    
+    # Move to a different spot (e.g., 30cm to the right)
+    p_WOgoal = current_pos + np.array([0.3, 0.0, 0.0])
+    
+    # Keep same orientation
+    R_WOgoal = X_WO.rotation()
+    
+    X_WOgoal = RigidTransform(R_WOgoal, p_WOgoal)
+    X_WGgoal = X_WOgoal @ X_OG
+    
+    return X_WGgoal
+
+
+def design_pregoal_pose(X_WG: RigidTransform):
+    """
+    Hover above goal before placing.
+    """
+    X_GGApproach = RigidTransform([0.0, 0.0, -0.1])
+    X_WGApproach = X_WG @ X_GGApproach
+    return X_WGApproach
+
+
+def design_postgoal_pose(X_WG: RigidTransform):
+    """
+    Retract after placing.
+    """
+    X_GGApproach = RigidTransform([0.0, 0.0, -0.15])
+    X_WGApproach = X_WG @ X_GGApproach
+    return X_WGApproach
+
+
+def make_trajectory(X_Gs: list[RigidTransform], finger_values: np.ndarray, sample_times: list[float]):
+    """
+    Create smooth trajectory through keyframes.
+    """
+    robot_position_trajectory = PiecewisePose.MakeLinear(sample_times, X_Gs)
+    robot_velocity_trajectory = robot_position_trajectory.MakeDerivative()
+    traj_wsg_command = PiecewisePolynomial.FirstOrderHold(sample_times, finger_values)
+    return robot_velocity_trajectory, traj_wsg_command
+
+scenario_path = "scenarios/bimanual_IIWA14_with_table_and_cameras.scenario.yaml"
+    
+# -----------------------------------------------------------------------------
+# TODO Pick and Place with registered geometries
+# -----------------------------------------------------------------------------
+# === Step 1: Run ICP to find the cup pose ===
+MAX_ITERATIONS = 25
+N_SAMPLE_POINTS = 150
+
+# Load the cup model and sample points
+mesh = trimesh.load(f"assets/cup.obj", force="mesh")
+model_points_O = mesh.sample(count=N_SAMPLE_POINTS).T  # 3 x N, object frame
+
+# Get the scene point cloud from cameras for the cup we want to grasp
+plant = station.plant()
+plant_context = plant.GetMyContextFromRoot(context)
+world_frame = plant.world_frame()
+
+# Choose which cup to grasp
+cup_body = cup_left_body  # or cup_right_body or cup_top_body
+X_WC_true = plant.CalcRelativeTransform(plant_context, world_frame, cup_body.body_frame())
+
+# Crop point clouds around this cup
+cup_pos = X_WC_true.translation()
+offset = np.array([0.07, 0.07, 0.15])
+lower = cup_pos - offset
+upper = cup_pos + offset
+
+# Get camera point clouds and crop
+pc0 = diagram.GetOutputPort("camera0_point_cloud").Eval(context)
+pc1 = diagram.GetOutputPort("camera1_point_cloud").Eval(context)
+pc2 = diagram.GetOutputPort("camera2_point_cloud").Eval(context)
+
+pc0_crop = pc0.Crop(lower_xyz=lower, upper_xyz=upper)
+pc1_crop = pc1.Crop(lower_xyz=lower, upper_xyz=upper)
+pc2_crop = pc2.Crop(lower_xyz=lower, upper_xyz=upper)
+
+# Concatenate and process
+cup_pc = Concatenate([pc0_crop, pc1_crop, pc2_crop])
+cup_pc = cup_pc.VoxelizedDownSample(0.005)
+
+# Remove table points
+def remove_table_points(pc: PointCloud) -> PointCloud:
+    xyzs = pc.xyzs()
+    mask = xyzs[2, :] > 0.01
+    filtered = PointCloud(mask.sum(), fields=pc.fields())
+    filtered.mutable_xyzs()[:] = xyzs[:, mask]
+    if pc.has_rgbs():
+        filtered.mutable_rgbs()[:] = pc.rgbs()[:, mask]
+    if pc.has_normals():
+        filtered.mutable_normals()[:] = pc.normals()[:, mask]
+    return filtered
+
+scene_point_cloud = remove_table_points(cup_pc)
+
+# Convert to numpy for ICP
+model_pcl_np = np.asarray(model_points_O)  # 3 x N
+scene_pcl_np = np.asarray(scene_point_cloud.xyzs())  # 3 x M
+
+print("Model shape:", model_pcl_np.shape)
+print("Scene shape:", scene_pcl_np.shape)
+
+# Initial guess - use centroid of scene
+centroid_W = scene_pcl_np.mean(axis=1)
+X_WO_initial = RigidTransform(RotationMatrix(), centroid_W)
+
+# Run ICP to find cup pose in mesh frame O
+X_WO_hat, cost_history = IterativeClosestPoint(
+    p_Om=model_pcl_np,
+    p_Ws=scene_pcl_np,
+    X_Ohat=X_WO_initial,
+    meshcat=meshcat,
+    meshcat_scene_path="icp/target_cup",
+    max_iterations=MAX_ITERATIONS,
+)
+
+final_cost = cost_history[-1] if hasattr(cost_history, "__len__") else cost_history
+print(f"ICP converged with cost: {final_cost:.4f}")
+
+# === Step 2: Convert from mesh frame O to base_link frame C ===
+# The mesh frame O and base_link frame C are related by a fixed transform
+# We can compute this from the ground truth pose:
+#   X_WC_true = world-from-base_link (ground truth)
+#   X_WO_hat  = world-from-mesh (ICP result)
+#   X_CO = (X_WC_true)^{-1} * X_WO_hat  (mesh-in-base_link, constant offset)
+#   X_OC = (X_CO)^{-1}
+#   X_WC_hat = X_WO_hat * X_OC  (predicted base_link pose)
+
+X_CO_offset = X_WC_true.inverse().multiply(X_WO_hat)
+X_OC_offset = X_CO_offset.inverse()
+X_WC_hat = X_WO_hat.multiply(X_OC_offset)
+
+print(f"Cup base_link pose (ICP): {X_WC_hat.translation()}")
+print(f"Cup base_link pose (true): {X_WC_true.translation()}")
+
+# Visualize the ICP result in base_link frame
+AddMeshcatTriad(
+    meshcat,
+    "icp/cup_base_link_estimated",
+    X_PT=X_WC_hat,
+    length=0.07,
+    radius=0.003,
+)
+
+# Store positions of other cups for later
+cup_positions = {}
+for name, body in [("left", cup_left_body), ("right", cup_right_body), ("top", cup_top_body)]:
+    X_WC = plant.CalcRelativeTransform(plant_context, world_frame, body.body_frame())
+    cup_positions[name] = X_WC
+
+# === Step 3: Build NEW Diagram for Pick and Place ===
+builder2 = DiagramBuilder()
+
+# Load scenario
+scenario = LoadScenario(filename=scenario_path)
+
+# Create new station
+station2 = builder2.AddSystem(MakeHardwareStation(scenario, meshcat=meshcat))
+plant2 = station2.GetSubsystemByName("plant")
+
+# === Step 4: Design trajectory keyframes ===
+# Use the ICP result as the cup's pose (in base_link frame)
+X_WC_initial = X_WC_hat
+
+# Get initial gripper pose
+temp_context = station2.CreateDefaultContext()
+temp_plant_context = plant2.GetMyContextFromRoot(temp_context)
+X_WGinitial = plant2.EvalBodyPoseInWorld(temp_plant_context, plant2.GetBodyByName("body"))
+
+# Design grasp poses
+X_OG, X_WGpick = design_grasp_pose(X_WC_initial)
+X_WGprepick = design_pregrasp_pose(X_WGpick)
+
+# Design goal poses (move cup to a new location)
+X_WGgoal = design_goal_poses(X_WC_initial, X_OG)
+X_WGpregoal = design_pregoal_pose(X_WGgoal)
+X_WGpostgoal = design_postgoal_pose(X_WGgoal)
+
+# Gripper states
+opened = 0.1
+closed = 0.05
+# Create safe intermediate waypoints
+# 1. Safe position high above the workspace
+safe_height_pos = np.array([0.0, 0.0, 0.5])
+X_WGsafe = RigidTransform(X_WGinitial.rotation(), safe_height_pos)
+
+# 2. Position directly above the cup before descending
+above_cup_pos = X_WGprepick.translation() + np.array([0.0, 0.0, 0.15])
+X_WGabove = RigidTransform(X_WGprepick.rotation(), above_cup_pos)
+
+# 3. Position above goal before descending
+above_goal_pos = X_WGpregoal.translation() + np.array([0.0, 0.0, 0.15])
+X_WGabove_goal = RigidTransform(X_WGpregoal.rotation(), above_goal_pos)
+
+# Define keyframes with safe collision-free path
+keyframes = [
+    ("initial", X_WGinitial, opened),
+    ("safe_high", X_WGsafe, opened),  # Lift to safe height
+    ("above_cup", X_WGabove, opened),  # Move above cup
+    ("prepick", X_WGprepick, opened),  # Descend to prepick
+    ("pick", X_WGpick, opened),  # Move to grasp
+    ("pick_close", X_WGpick, closed),  # Close gripper
+    ("pick_lift", X_WGprepick, closed),  # Lift slightly
+    ("lift_high", X_WGabove, closed),  # Lift to clear obstacles
+    ("safe_transport", X_WGsafe, closed),  # Move to safe height for transport
+    ("above_goal", X_WGabove_goal, closed),  # Position above goal
+    ("pregoal", X_WGpregoal, closed),  # Descend toward goal
+    ("goal", X_WGgoal, closed),  # Place at goal
+    ("goal_open", X_WGgoal, opened),  # Open gripper
+    ("postgoal", X_WGpostgoal, opened),  # Retract slightly
+    ("above_goal2", X_WGabove_goal, opened),  # Lift up
+    ("safe_return", X_WGsafe, opened),  # Return via safe height
+    ("return", X_WGinitial, opened),  # Return to initial
+]
+
+# Extract poses and gripper commands
+gripper_poses = [kf[1] for kf in keyframes]
+finger_states = np.array([[kf[2] for kf in keyframes]])
+sample_times = [2.5 * i for i in range(len(keyframes))]
+
+# Create trajectories
+traj_V_G, traj_wsg_command = make_trajectory(gripper_poses, finger_states, sample_times)
+
+# === Step 5: Add controller systems ===
+V_G_source = builder2.AddSystem(TrajectorySource(traj_V_G))
+controller = builder2.AddSystem(PseudoInverseController(plant2))
+integrator = builder2.AddSystem(Integrator(7))
+wsg_source = builder2.AddSystem(TrajectorySource(traj_wsg_command))
+
+# === Step 6: Wire up the systems ===
+builder2.Connect(V_G_source.get_output_port(), controller.GetInputPort("V_WG"))
+builder2.Connect(controller.get_output_port(), integrator.get_input_port())
+builder2.Connect(integrator.get_output_port(), station2.GetInputPort("iiwa.position"))
+builder2.Connect(station2.GetOutputPort("iiwa.position_measured"), controller.GetInputPort("iiwa.position"))
+builder2.Connect(wsg_source.get_output_port(), station2.GetInputPort("wsg.position"))
+
+# === Step 7: Set initial cup poses ===
+cup_models = {
+    "left": plant2.GetModelInstanceByName("cup_lower_left"),
+    "right": plant2.GetModelInstanceByName("cup_lower_right"),
+    "top": plant2.GetModelInstanceByName("cup_top")
+}
+
+for name, model_instance in cup_models.items():
+    body = plant2.GetBodyByName("base_link", model_instance)
+    if name == "left":  # The cup we're picking - use ICP result
+        plant2.SetFreeBodyPose(temp_plant_context, body, X_WC_hat)
+    else:  # Other cups - use stored positions
+        plant2.SetFreeBodyPose(temp_plant_context, body, cup_positions[name])
+
+# Build final diagram
+diagram2 = builder2.Build()
+
+# === Step 8: Run Simulation ===
+simulator = Simulator(diagram2)
+context2 = simulator.get_mutable_context()
+
+# Get contexts
+station_context2 = station2.GetMyMutableContextFromRoot(context2)
+plant_context2 = plant2.GetMyMutableContextFromRoot(context2)
+
+# === FIX: Set initial cup poses in the SIMULATOR's context ===
+cup_models = {
+    "left": plant2.GetModelInstanceByName("cup_lower_left"),
+    "right": plant2.GetModelInstanceByName("cup_lower_right"),
+    "top": plant2.GetModelInstanceByName("cup_top")
+}
+
+for name, model_instance in cup_models.items():
+    body = plant2.GetBodyByName("base_link", model_instance)
+    if name == "left":  # The cup we're picking - use ICP result
+        plant2.SetFreeBodyPose(plant_context2, body, X_WC_hat)
+    else:  # Other cups - use stored positions
+        plant2.SetFreeBodyPose(plant_context2, body, cup_positions[name])
+
+# CRITICAL: Initialize the integrator with the current robot position
+integrator_context = integrator.GetMyMutableContextFromRoot(context2)
+current_iiwa_position = plant2.GetPositions(plant_context2, plant2.GetModelInstanceByName("iiwa"))
+integrator.set_integral_value(integrator_context, current_iiwa_position)
+
+# Force publish to see initial state
+diagram2.ForcedPublish(context2)
+
+print(f"Simulation will run for {traj_V_G.end_time()} seconds")
+
+# Run simulation with recording
+meshcat.StartRecording()
+simulator.AdvanceTo(traj_V_G.end_time())
+meshcat.StopRecording()
+meshcat.PublishRecording()
+
+print("Pick and place simulation complete!")
+
+# -----------------------------------------------------------------------------
+# End of pick-and-place
+# -----------------------------------------------------------------------------
 
 # -----------------------------------------------------------------------------
 # 6. Run a short simulation to test collisions & point clouds
@@ -498,13 +830,14 @@ for (body, name) in zip(cup_bodies, cup_names):
 
 # # A couple seconds is enough to see gravity / contact effects
 # simulator.AdvanceTo(15.0)
-simulator = Simulator(diagram, context)
-# context = simulator.get_mutable_context()
-# diagram.ForcedPublish(context)
+# simulator = Simulator(diagram, context)
+# # context = simulator.get_mutable_context()
+# # diagram.ForcedPublish(context)
 
-meshcat.StartRecording()
-simulator.AdvanceTo(5.0)
-meshcat.StopRecording()
-meshcat.PublishRecording()
+# meshcat.StartRecording()
+# simulator.AdvanceTo(5.0)
+# meshcat.StopRecording()
+# meshcat.PublishRecording()
 
-print("Scene setup complete: iiwa + wsg + table + pyramid cups + 3 depth cameras with point clouds.")
+# print("Scene setup complete: iiwa + wsg + table + pyramid cups + 3 depth cameras with point clouds.")
+# 
