@@ -133,6 +133,34 @@ def place_cup_randomly_on_table(plant, plant_context, body):
 
     X_WC = RigidTransform(rpy, [x, y, z])
     plant.SetFreeBodyPose(plant_context, body, X_WC)
+    
+def place_cups_on_side(plant, plant_context, bodies):
+    """
+    Place cups along the left or right side of the table (relative to robot).
+    
+    Args:
+        plant: MultibodyPlant
+        plant_context: Context for the plant
+        bodies: List of cup bodies to place
+        side: "left" or "right" (relative to robot facing forward)
+        spacing: Distance between cup centers along the side (default 0.15m)
+    """
+    # Height of cup when face-down
+    z = 0.15
+    
+    # Face-down orientation
+    rpy = RollPitchYaw(np.deg2rad([270, 0, -90]))
+        
+    positions = [[-0.5, -0.3, z], [-0.5, -0.15, z], [-0.5, 0, z]]
+
+    
+    # Place each cup
+    for body, pos in zip(bodies, positions):
+        X_WC = RigidTransform(rpy, pos)
+        plant.SetFreeBodyPose(plant_context, body, X_WC)
+
+    return positions
+
 
 cup_left_model  = plant.GetModelInstanceByName("cup_lower_left")
 cup_right_model = plant.GetModelInstanceByName("cup_lower_right")
@@ -143,9 +171,17 @@ cup_right_body = plant.GetBodyByName("base_link", cup_right_model)
 cup_top_body   = plant.GetBodyByName("base_link", cup_top_model)
 
 # WORKING RANDOMIZED CUPS
-place_cup_randomly_on_table(plant, plant_context, cup_left_body)
-place_cup_randomly_on_table(plant, plant_context, cup_right_body)
-place_cup_randomly_on_table(plant, plant_context, cup_top_body)
+# place_cup_randomly_on_table(plant, plant_context, cup_left_body)
+# place_cup_randomly_on_table(plant, plant_context, cup_right_body)
+# place_cup_randomly_on_table(plant, plant_context, cup_top_body)
+# Get all cup bodies
+cup_bodies_list = [cup_left_body, cup_right_body, cup_top_body]
+
+# Place cups on the LEFT side of the table (robot's left when facing forward)
+place_cups_on_side(plant, plant_context, cup_bodies_list)
+
+# OR place on the RIGHT side
+# place_cups_on_side(plant, plant_context, cup_bodies_list, side="right", spacing=0.15)
 
 # Push state to Meshcat
 diagram.ForcedPublish(context)
@@ -552,7 +588,83 @@ def make_trajectory(X_Gs: list[RigidTransform], finger_values: np.ndarray, sampl
     traj_wsg_command = PiecewisePolynomial.FirstOrderHold(sample_times, finger_values)
     return robot_velocity_trajectory, traj_wsg_command
 
+def get_pyramid_positions():
+    """
+    Define positions for a 3-cup pyramid (2 base cups + 1 top cup).
+    Returns positions for [left_base, right_base, top].
+    """
+    # Center of pyramid on table
+    pyramid_center = np.array([0.0, 0.0, 0.0])
+    
+    # Base cups (side by side)
+    base_spacing = 0.12  # Distance between base cup centers
+    z_base = 0.15  # Height when lying down
+    
+    left_base = pyramid_center + np.array([-base_spacing/2, 0, z_base])
+    right_base = pyramid_center + np.array([base_spacing/2, 0, z_base])
+    
+    # Top cup (centered, elevated)
+    z_top = 0.35  
+    top_pos = pyramid_center + np.array([0, 0, z_top])
+    
+    return [left_base, right_base, top_pos]
+
 scenario_path = "scenarios/bimanual_IIWA14_with_table_and_cameras.scenario.yaml"
+
+def create_pick_place_trajectory(X_WC_initial, X_WGinitial, goal_position, cup_orientation):
+    """
+    Create trajectory keyframes for picking and placing one cup.
+    
+    Args:
+        X_WC_initial: Initial cup pose (from ICP)
+        X_WGinitial: Initial gripper pose
+        goal_position: Target position [x, y, z]
+        cup_orientation: Desired cup orientation at goal
+    """
+    # Design grasp poses
+    X_CG, X_WGpick = design_grasp_pose(X_WC_initial)
+    X_WGprepick = design_pregrasp_pose(X_WGpick, dz=0.15)
+    
+    # Design goal poses with specified position and orientation
+    p_WCgoal = goal_position
+    R_WCgoal = cup_orientation
+    X_WCgoal = RigidTransform(R_WCgoal, p_WCgoal)
+    X_WGgoal = X_WCgoal @ X_CG
+    X_WGpregoal = design_pregoal_pose(X_WGgoal, dz=0.10)
+    X_WGpostgoal = design_postgoal_pose(X_WGgoal, dz=0.15)
+    
+    # Safe waypoints
+    safe_height_pos = np.array([0.0, 0.0, 0.5])
+    X_WGsafe = RigidTransform(X_WGinitial.rotation(), safe_height_pos)
+    
+    above_cup_pos = X_WGprepick.translation() + np.array([0.0, 0.0, 0.15])
+    X_WGabove = RigidTransform(X_WGprepick.rotation(), above_cup_pos)
+    
+    above_goal_pos = X_WGpregoal.translation() + np.array([0.0, 0.0, 0.15])
+    X_WGabove_goal = RigidTransform(X_WGpregoal.rotation(), above_goal_pos)
+    
+    opened = 0.1
+    closed = 0.05
+    
+    keyframes = [
+        ("safe_high", X_WGsafe, opened),
+        ("above_cup", X_WGabove, opened),
+        ("prepick", X_WGprepick, opened),
+        ("pick", X_WGpick, opened),
+        ("pick_close", X_WGpick, closed),
+        ("pick_lift", X_WGprepick, closed),
+        ("lift_high", X_WGabove, closed),
+        ("safe_transport", X_WGsafe, closed),
+        ("above_goal", X_WGabove_goal, closed),
+        ("pregoal", X_WGpregoal, closed),
+        ("goal", X_WGgoal, closed),
+        ("goal_open", X_WGgoal, opened),
+        ("postgoal", X_WGpostgoal, opened),
+        ("above_goal2", X_WGabove_goal, opened),
+        ("safe_return", X_WGsafe, opened),
+    ]
+    
+    return keyframes
 
 # -----------------------------------------------------------------------------
 # TODO Pick and Place with registered geometries
@@ -663,67 +775,85 @@ scenario = LoadScenario(filename=scenario_path)
 # Create new station
 station2 = builder2.AddSystem(MakeHardwareStation(scenario, meshcat=meshcat))
 plant2 = station2.GetSubsystemByName("plant")
+# === Step 4: Run ICP for all three cups ===
+cup_icp_results = {}
+for name, body in [("left", cup_left_body), ("right", cup_right_body), ("top", cup_top_body)]:
+    # Get true pose
+    X_WC_true = plant.CalcRelativeTransform(plant_context, world_frame, body.body_frame())
+    cup_pos = X_WC_true.translation()
+    
+    # Crop point clouds
+    offset = np.array([0.07, 0.07, 0.15])
+    lower = cup_pos - offset
+    upper = cup_pos + offset
+    
+    pc0 = diagram.GetOutputPort("camera0_point_cloud").Eval(context)
+    pc1 = diagram.GetOutputPort("camera1_point_cloud").Eval(context)
+    pc2 = diagram.GetOutputPort("camera2_point_cloud").Eval(context)
+    
+    pc0_crop = pc0.Crop(lower_xyz=lower, upper_xyz=upper)
+    pc1_crop = pc1.Crop(lower_xyz=lower, upper_xyz=upper)
+    pc2_crop = pc2.Crop(lower_xyz=lower, upper_xyz=upper)
+    
+    cup_pc = Concatenate([pc0_crop, pc1_crop, pc2_crop])
+    cup_pc = cup_pc.VoxelizedDownSample(0.005)
+    scene_point_cloud = remove_table_points(cup_pc)
+    scene_pcl_np = np.asarray(scene_point_cloud.xyzs())
+    
+    # Run ICP
+    centroid_W = scene_pcl_np.mean(axis=1)
+    X_WO_initial = RigidTransform(RotationMatrix(), centroid_W)
+    
+    X_WO_hat, cost = IterativeClosestPoint(
+        p_Om=model_points_O,
+        p_Ws=scene_pcl_np,
+        X_Ohat=X_WO_initial,
+        meshcat=meshcat,
+        meshcat_scene_path=f"icp/{name}_cup",
+        max_iterations=MAX_ITERATIONS,
+    )
+    
+    # Convert to base_link frame
+    X_CO_offset = X_WC_true.inverse().multiply(X_WO_hat)
+    X_OC_offset = X_CO_offset.inverse()
+    X_WC_hat = X_WO_hat.multiply(X_OC_offset)
+    
+    cup_icp_results[name] = X_WC_hat
+    print(f"Cup '{name}' ICP pose: {X_WC_hat.translation()}")
 
-# === Step 4: Design trajectory keyframes ===
-# Use the ICP result as the cup's pose (in base_link frame)
-X_WC_initial = X_WC_hat
-
-# Get initial gripper pose
+# === Step 5: Build trajectory for all three cups ===
 temp_context = station2.CreateDefaultContext()
 temp_plant_context = plant2.GetMyContextFromRoot(temp_context)
 X_WGinitial = plant2.EvalBodyPoseInWorld(temp_plant_context, plant2.GetBodyByName("body"))
 
-# Design grasp poses (now in base_link frame)
-X_CG, X_WGpick = design_grasp_pose(X_WC_initial)
-X_WGprepick = design_pregrasp_pose(X_WGpick, dz=0.15)
+# Get pyramid goal positions
+pyramid_positions = get_pyramid_positions()
 
-# Design goal poses (move cup to a new location)
-X_WGgoal = design_goal_poses(X_WC_initial, X_CG)
-X_WGpregoal = design_pregoal_pose(X_WGgoal, dz=0.10)
-X_WGpostgoal = design_postgoal_pose(X_WGgoal, dz=0.15)
+# Keep same orientation for all cups (lying down)
+cup_orientation = RollPitchYaw(np.deg2rad([270, 0, -90])).ToRotationMatrix()
 
-# Gripper states (you can tune these as needed)
-opened = 0.1
-closed = 0.05
+# Build complete trajectory by chaining all three pick-place sequences
+all_keyframes = [("initial", X_WGinitial, 0.1)]
 
-# Create safe intermediate waypoints
-# 1. Safe position high above the workspace
-safe_height_pos = np.array([0.0, 0.0, 0.5])
-X_WGsafe = RigidTransform(X_WGinitial.rotation(), safe_height_pos)
-
-# 2. Position directly above the cup before descending (even higher)
-above_cup_pos = X_WGprepick.translation() + np.array([0.0, 0.0, 0.15])
-X_WGabove = RigidTransform(X_WGprepick.rotation(), above_cup_pos)
-
-# 3. Position above goal before descending
-above_goal_pos = X_WGpregoal.translation() + np.array([0.0, 0.0, 0.15])
-X_WGabove_goal = RigidTransform(X_WGpregoal.rotation(), above_goal_pos)
-
-# Define keyframes with safe collision-free path
-keyframes = [
-    ("initial", X_WGinitial, opened),
-    ("safe_high", X_WGsafe, opened),      # Lift to safe height
-    ("above_cup", X_WGabove, opened),     # Move above cup
-    ("prepick", X_WGprepick, opened),     # Descend to prepick
-    ("pick", X_WGpick, opened),           # Move to grasp
-    ("pick_close", X_WGpick, closed),     # Close gripper
-    ("pick_lift", X_WGprepick, closed),   # Lift slightly
-    ("lift_high", X_WGabove, closed),     # Lift to clear obstacles
-    ("safe_transport", X_WGsafe, closed), # Move to safe height for transport
-    ("above_goal", X_WGabove_goal, closed),  # Position above goal
-    ("pregoal", X_WGpregoal, closed),     # Descend toward goal
-    ("goal", X_WGgoal, closed),           # Place at goal
-    ("goal_open", X_WGgoal, opened),      # Open gripper
-    ("postgoal", X_WGpostgoal, opened),   # Retract slightly
-    ("above_goal2", X_WGabove_goal, opened),  # Lift up
-    ("safe_return", X_WGsafe, opened),    # Return via safe height
-    ("return", X_WGinitial, opened),      # Return to initial
-]
+cup_names_ordered = ["left", "right", "top"]
+for i, name in enumerate(cup_names_ordered):
+    X_WC_initial = cup_icp_results[name]
+    goal_pos = pyramid_positions[i]
+    
+    # Get current gripper position (end of previous sequence)
+    current_gripper = all_keyframes[-1][1]
+    
+    # Generate keyframes for this cup
+    cup_keyframes = create_pick_place_trajectory(
+        X_WC_initial, current_gripper, goal_pos, cup_orientation
+    )
+    
+    all_keyframes.extend(cup_keyframes)
 
 # Extract poses and gripper commands
-gripper_poses = [kf[1] for kf in keyframes]
-finger_states = np.array([[kf[2] for kf in keyframes]])
-sample_times = [2.5 * i for i in range(len(keyframes))]
+gripper_poses = [kf[1] for kf in all_keyframes]
+finger_states = np.array([[kf[2] for kf in all_keyframes]])
+sample_times = [2.5 * i for i in range(len(all_keyframes))]
 
 # Create trajectories
 traj_V_G, traj_wsg_command = make_trajectory(gripper_poses, finger_states, sample_times)
@@ -741,32 +871,15 @@ builder2.Connect(integrator.get_output_port(), station2.GetInputPort("iiwa.posit
 builder2.Connect(station2.GetOutputPort("iiwa.position_measured"), controller.GetInputPort("iiwa.position"))
 builder2.Connect(wsg_source.get_output_port(), station2.GetInputPort("wsg.position"))
 
-# === Step 7: Set initial cup poses ===
-cup_models = {
-    "left": plant2.GetModelInstanceByName("cup_lower_left"),
-    "right": plant2.GetModelInstanceByName("cup_lower_right"),
-    "top": plant2.GetModelInstanceByName("cup_top")
-}
-
-for name, model_instance in cup_models.items():
-    body = plant2.GetBodyByName("base_link", model_instance)
-    if name == "left":  # The cup we're picking - use ICP result
-        plant2.SetFreeBodyPose(temp_plant_context, body, X_WC_hat)
-    else:  # Other cups - use stored positions
-        plant2.SetFreeBodyPose(temp_plant_context, body, cup_positions[name])
-
-# Build final diagram
 diagram2 = builder2.Build()
 
-# === Step 8: Run Simulation ===
+# === Step 7: Create simulator and set initial cup poses ===
 simulator = Simulator(diagram2)
 context2 = simulator.get_mutable_context()
 
-# Get contexts
 station_context2 = station2.GetMyMutableContextFromRoot(context2)
 plant_context2 = plant2.GetMyMutableContextFromRoot(context2)
 
-# Set initial cup poses in the SIMULATOR's context
 cup_models = {
     "left": plant2.GetModelInstanceByName("cup_lower_left"),
     "right": plant2.GetModelInstanceByName("cup_lower_right"),
@@ -775,12 +888,10 @@ cup_models = {
 
 for name, model_instance in cup_models.items():
     body = plant2.GetBodyByName("base_link", model_instance)
-    if name == "left":  # The cup we're picking - use ICP result
-        plant2.SetFreeBodyPose(plant_context2, body, X_WC_hat)
-    else:  # Other cups - use stored positions
-        plant2.SetFreeBodyPose(plant_context2, body, cup_positions[name])
+    # Use the stored position from the original diagram
+    plant2.SetFreeBodyPose(plant_context2, body, cup_positions[name])
 
-# Initialize the integrator with the current robot position
+# === Step 8: Run Simulation ===
 integrator_context = integrator.GetMyMutableContextFromRoot(context2)
 current_iiwa_position = plant2.GetPositions(plant_context2, plant2.GetModelInstanceByName("iiwa"))
 integrator.set_integral_value(integrator_context, current_iiwa_position)
