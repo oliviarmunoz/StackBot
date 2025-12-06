@@ -84,33 +84,37 @@ def design_postgoal_pose(X_WG: RigidTransform, dz: float = 0.15):
     p[2] += dz
     return RigidTransform(X_WG.rotation(), p)
 
-def make_trajectory(X_Gs: list[RigidTransform], finger_values: np.ndarray, sample_times: list[float]):
-    """
-    Create smooth trajectory through keyframes.
-    """
+def make_trajectory(X_Gs, finger_values, sample_times):
     robot_position_trajectory = PiecewisePose.MakeLinear(sample_times, X_Gs)
     robot_velocity_trajectory = robot_position_trajectory.MakeDerivative()
     traj_wsg_command = PiecewisePolynomial.FirstOrderHold(sample_times, finger_values)
     return robot_velocity_trajectory, traj_wsg_command
 
-def get_pyramid_positions():
+def get_pyramid_positions(center_xy: np.ndarray,
+                          z_base: float = 0.15,
+                          z_top: float = 0.35,
+                          base_spacing: float = 0.12):
     """
-    Define positions for a 3-cup pyramid (2 base cups + 1 top cup).
-    Returns positions for [left_base, right_base, top].
+    Define positions for a 3-cup pyramid (2 base cups + 1 top cup),
+    centered around center_xy = [x, y].
+
+    Returns positions [left_base, right_base, top] in WORLD frame.
     """
-    # Center of pyramid on table
-    pyramid_center = np.array([0.0, 0.0, 0.0])
-    
-    base_spacing = 0.12  
-    z_base = 0.15
-    
-    left_base = pyramid_center + np.array([-base_spacing/2, 0, z_base])
-    right_base = pyramid_center + np.array([base_spacing/2, 0, z_base])
-    
-    z_top = 0.34  
-    top_pos = pyramid_center + np.array([0, 0, z_top])
-    
+    cx, cy = center_xy
+
+    left_base  = np.array([cx - base_spacing / 2.0, cy, z_base])
+    right_base = np.array([cx + base_spacing / 2.0, cy, z_base])
+    top_pos    = np.array([cx, cy, z_top])
+
     return [left_base, right_base, top_pos]
+
+def make_safe_pose_above_workspace(X_WG_ref, z_safe=0.5):
+    return RigidTransform(X_WG_ref.rotation(), [0.0, 0.0, z_safe])
+
+def make_above_pose(X_WG_ref, dz=0.15):
+    p = X_WG_ref.translation().copy()
+    p[2] += dz
+    return RigidTransform(X_WG_ref.rotation(), p)
 
 scenario_path = "scenarios/bimanual_IIWA14_with_table_and_cameras.scenario.yaml"
 
