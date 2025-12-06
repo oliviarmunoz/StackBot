@@ -27,7 +27,7 @@ directives:
         rotation: !Rpy { deg: [90, 0, 90]}
 - add_model:
     name: table
-    file: file:///workspaces/MIT/6.4210/StackBot/assets/table.sdf
+    file: file:///workspaces/StackBot/assets/table.sdf
 - add_weld:
     parent: world
     child: table::table_link
@@ -36,12 +36,12 @@ directives:
         rotation: !Rpy { deg: [0, 0, -90] }
 - add_model:
     name: cup_lower_left
-    file: file:///workspaces/MIT/6.4210/StackBot/assets/model_cup.sdf
+    file: file:///workspaces/StackBot/assets/model_cup.sdf
 
 - add_model:
     name: cup_lower_right
-    file: file:///workspaces/MIT/6.4210/StackBot/assets/model_cup.sdf
+    file: file:///workspaces/StackBot/assets/model_cup.sdf
 
 - add_model:
     name: cup_top
-    file: file:///workspaces/MIT/6.4210/StackBot/assets/model_cup.sdf
+    file: file:///workspaces/StackBot/assets/model_cup.sdf
