@@ -21,7 +21,7 @@
         <pose>0 0 0 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>file:///workspaces/StackBot/assets/cup_collision.obj</uri>
+            <uri>file:///workspaces/MIT/6.4210/StackBot/assets/cup_collision.obj</uri>
             <scale>0.3 0.3 0.3</scale>
           </mesh>
         </geometry>
@@ -38,7 +38,7 @@
         <pose>0 0 0 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>file:///workspaces/StackBot/assets/cup.obj</uri>
+            <uri>file:///workspaces/MIT/6.4210/StackBot/assets/cup.obj</uri>
             <scale>0.3 0.3 0.3</scale>
           </mesh>
         </geometry>
