@@ -30,7 +30,6 @@ def place_cups_randomly_nonoverlapping(
     Y_MIN, Y_MAX = -extrema + 0.1, extrema + 0.1
 
     placed_positions = []
-    all_XWCs = []
 
     for body in bodies:
        for _ in range(max_attempts):
@@ -46,10 +45,6 @@ def place_cups_randomly_nonoverlapping(
                 X_WC = RigidTransform(rpy, [x, y, z])
                 plant.SetFreeBodyPose(plant_context, body, X_WC)
                 placed_positions.append(np.array([x, y, z]))
-                all_XWCs.append(X_WC)
                 break
-
-
-    return all_XWCs
     
     

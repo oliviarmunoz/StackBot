@@ -1,16 +1,10 @@
-from pydrake.all import (
-    ConstantVectorSource,
-    DiagramBuilder,
-)
+from pydrake.all import DiagramBuilder
 
 from manipulation.station import (
     AddPointClouds,
     LoadScenario,
     MakeHardwareStation,
 )
-
-
-import numpy as np
 
 
 def create_stackbot_scene(meshcat):
@@ -22,32 +16,7 @@ def create_stackbot_scene(meshcat):
     builder = DiagramBuilder()
     builder.AddSystem(station)
 
-    # plant = station.GetSubsystemByName("plant")
-
-    # ---- Constant commands so the iiwa/wsg just "sit there" ----
-    # iiwa_model = plant.GetModelInstanceByName("iiwa")
-    # n_q_iiwa = plant.num_positions(iiwa_model)
-
-    # Use the default configuration as the constant command.
-    # plant_tmp_context = plant.CreateDefaultContext()
-    # q0_iiwa = plant.GetPositions(plant_tmp_context, iiwa_model)
-    # if q0_iiwa.shape[0] != n_q_iiwa:
-    #     q0_iiwa = np.zeros(n_q_iiwa)
-
-    # iiwa_source = builder.AddSystem(ConstantVectorSource(q0_iiwa))
-    # # builder.Connect(
-    # #     iiwa_source.get_output_port(),
-    # #     station.GetInputPort("iiwa.position"),
-    # # )
-
-    # # Gripper: slightly open
-    # wsg_source = builder.AddSystem(ConstantVectorSource([0.05]))
-    # # builder.Connect(
-    # #     wsg_source.get_output_port(),
-    # #     station.GetInputPort("wsg.position"),
-    # # )
-
-    # ---- Add point cloud systems for the 3 cameras ----
+    # add point cloud systems
     to_point_cloud = AddPointClouds(
         scenario=scenario,
         station=station,

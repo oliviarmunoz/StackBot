@@ -35,25 +35,26 @@ def stackbot():
     cup_left_model  = plant.GetModelInstanceByName("cup_lower_left")
     cup_right_model = plant.GetModelInstanceByName("cup_lower_right")
     cup_top_model   = plant.GetModelInstanceByName("cup_top")
+
     cup_left_body  = plant.GetBodyByName("base_link", cup_left_model)
     cup_right_body = plant.GetBodyByName("base_link", cup_right_model)
     cup_top_body   = plant.GetBodyByName("base_link", cup_top_model)
 
     cup_bodies = [cup_left_body, cup_right_body, cup_top_body]
-    cup_names = ["left", "right", "top"]
     cup_models = [cup_left_model, cup_right_model, cup_top_model]
+    cup_names = ["left", "right", "top"]
 
     # place cups
-    place_cups_randomly_nonoverlapping(plant, plant_context, cup_bodies)
-
+    cup_true_poses = place_cups_randomly_nonoverlapping(plant, plant_context, cup_bodies)
     diagram.ForcedPublish(context)
+    
     print("------------- Scene setup complete. -------------")
 
     # -----------------------------------------------------------------------------
     # PERCEPTION MODULE 
     # -----------------------------------------------------------------------------
     model_points_O, world_frame, scene_pcls = make_point_clouds(station, context, diagram, meshcat, cup_bodies, cup_names)
-    cup_icp_results = crop_point_clouds_run_icp(cup_names, cup_bodies, plant_context, world_frame, plant, diagram, context, model_points_O, meshcat, scene_pcls)
+    cup_icp_results, cup_true_poses = crop_point_clouds_run_icp(cup_names, cup_bodies, plant_context, world_frame, plant, model_points_O, meshcat, scene_pcls, MAX_ITERATIONS)
     
     print("------------- Perception module complete. -------------")
     
@@ -72,10 +73,8 @@ def stackbot():
     # Create trajectories
     traj_V_G, traj_wsg_command = make_trajectory(gripper_poses, finger_values, sample_times)
     
-    print("------------- Manipulation module complete. -------------")
-
     # -----------------------------------------------------------------------------
-    # CONTROL MODULE 
+    # CONTROL SUBMODULE 
     # -----------------------------------------------------------------------------
 
     V_G_source = builder.AddSystem(TrajectorySource(traj_V_G))
@@ -91,7 +90,7 @@ def stackbot():
     
     diagram = builder.Build()
     
-    print("------------- Control module complete. -------------")
+    print("------------- Manipulation module complete. -------------")
     
     # -----------------------------------------------------------------------------
     # SIMULATION
@@ -102,7 +101,7 @@ def stackbot():
     plant_context = plant.GetMyMutableContextFromRoot(context)
     for name, model_instance in zip(cup_names, cup_models):
         body = plant.GetBodyByName("base_link", model_instance)
-        plant.SetFreeBodyPose(plant_context, body, cup_icp_results[name])
+        plant.SetFreeBodyPose(plant_context, body, cup_true_poses[name])
     
     station_context = station.GetMyMutableContextFromRoot(context)
     diagram.ForcedPublish(context)
